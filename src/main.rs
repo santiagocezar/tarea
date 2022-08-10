@@ -1,5 +1,6 @@
 #[macro_use]
 extern crate lazy_static;
+use clap::{AppSettings, Parser, Subcommand};
 use dirs::data_dir;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
@@ -13,27 +14,42 @@ use std::{
 };
 use uuid::Uuid;
 
-
-
-lazy_static! {
-    static ref APPDIR: PathBuf = { data_dir().unwrap().join("sctasks") };
-    static ref SORT_FILE: PathBuf = { APPDIR.join("sort") };
+#[derive(Subcommand)]
+enum Action {
+    /// Add a new task
+    Add {
+        /// What do you have to do?
+        task: Vec<String>,
+    },
+    /// List every task
+    List,
+    /// Mark task as done
+    Done {
+        /// Task number
+        id: usize,
+    },
+    /// Mark task as pending
+    Undo {
+        /// Task number
+        id: usize,
+    },
+    /// Remove task
+    Rm {
+        /// Task number
+        id: usize,
+    },
 }
 
-fn usage(exe: &str) {
-    println!(
-        "Usage:
-    {exe} add [TASK...]         \tAdd a new task
-    {exe} list                  \tList tasks to do
-    {exe} [TASK ID]             \tShow a task
-    {exe} [TASK ID] [SUBCOMMAND]\tTask subcommands:
+#[derive(Parser)]
+#[clap(global_setting = AppSettings::DeriveDisplayOrder)]
+struct Args {
+    #[clap(subcommand)]
+    action: Option<Action>,
+}
 
-List of task subcommands:
-    {exe} done\tMark task as done
-    {exe} undo\tMark task as pending
-    {exe} rm  \tRemove task
-    " // {exe} [PARENT ID] needs [CHILD ID]\tTurn task into subtask
-    )
+lazy_static! {
+    static ref APPDIR: PathBuf = data_dir().unwrap().join("tarea");
+    static ref SORT_FILE: PathBuf = APPDIR.join("sort");
 }
 
 #[derive(Serialize, Deserialize)]
@@ -76,12 +92,12 @@ fn list_tasks() -> io::Result<Vec<Task>> {
     Ok(tasks)
 }
 
-fn add_task(task: String) -> io::Result<Task> {
+fn add_task(task: &str) -> io::Result<Task> {
     let id = Uuid::new_v4().to_string();
 
     let t = Task {
         id,
-        task,
+        task: task.to_string(),
         done: false,
         parent: None,
     };
@@ -203,7 +219,6 @@ fn command_remove_task(n: usize) -> io::Result<Option<Task>> {
     if let Some(task) = get_task(n)? {
         edit_sort(Edit::Del(&task.id))?;
         task.remove()?;
-        println!("{} {}", "removed".red(), task.task);
         Ok(Some(task))
     } else {
         Ok(None)
@@ -211,52 +226,39 @@ fn command_remove_task(n: usize) -> io::Result<Option<Task>> {
 }
 
 fn main() -> io::Result<()> {
-    // own the args
-    let args_vec: Vec<String> = env::args().collect();
-    let mut args = args_vec.iter().map(|s| &**s);
+    let args = Args::parse();
 
-    let exe = args.next().unwrap_or("task");
-
-    // create app directory
+    // create app data directory
     fs::create_dir_all(APPDIR.as_path())?;
 
-    // Global subcommands
-    match args.next() {
-        None => usage(&exe),
-        Some("add") => {
-            if let Some(arg) = args.next() {
-                let task_text: String = args.map(|s| " ".to_string() + &s).collect();
-                let task = add_task(arg.to_string() + &task_text)?;
+    use Action::*;
+
+    if let Some(action) = args.action {
+        match action {
+            Add { task } => {
+                let task_text: String = task.iter().map(|s| s.clone() + " ").collect();
+                let task = add_task(task_text.trim_end())?;
                 command_list_tasks(Some(task.id))?;
-            } else {
-                command_list_tasks(None)?
+            }
+            List => command_list_tasks(None)?,
+            Done { id } => {
+                let task = command_done_task(id.saturating_sub(1), true)?;
+                command_list_tasks(task.map(|t| t.id))?;
+            }
+            Undo { id } => {
+                let task = command_done_task(id.saturating_sub(1), false)?;
+                command_list_tasks(task.map(|t| t.id))?;
+            }
+            Rm { id } => {
+                if let Some(task) = command_remove_task(id.saturating_sub(1))? {
+                    println!("{} {}", "removed".red(), task.task);
+                }
+                command_list_tasks(None)?;
             }
         }
-        Some("list") => command_list_tasks(None)?,
-        Some("done") => 
-        // Task subcommands
-        Some(n) => match usize::from_str_radix(n, 10) {
-            Ok(n) => {
-                let n = n.saturating_sub(1);
-                match args.next() {
-                    Some("done") => {
-                        let task = command_done_task(n, true)?;
-                        command_list_tasks(task.map(|t| t.id))?;
-                    }
-                    Some("undo") => {
-                        let task = command_done_task(n, false)?;
-                        command_list_tasks(task.map(|t| t.id))?;
-                    }
-                    Some("rm") => {
-                        let task = command_remove_task(n)?;
-                        command_list_tasks(None)?;
-                    }
-                    Some(_) => usage(&exe),
-                    None => command_show_task(n)?,
-                }
-            }
-            _ => usage(&exe),
-        },
+    } else {
+        command_list_tasks(None)?
     }
+
     Ok(())
 }
