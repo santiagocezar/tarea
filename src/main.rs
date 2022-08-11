@@ -115,13 +115,13 @@ enum Edit<'a> {
 }
 
 fn edit_sort(edit: Edit) -> io::Result<()> {
-    let id = Uuid::new_v4().to_string();
     let mut tasks = list_tasks()?;
 
     tasks.sort_by_key(|t| t.done);
 
     let mut sort = fs::OpenOptions::new()
         .write(true)
+        .create(true)
         .truncate(true)
         .open(SORT_FILE.as_path())?;
 
