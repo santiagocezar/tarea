@@ -1,7 +1,11 @@
 use owo_colors::OwoColorize;
 use std::io;
 
-use crate::api::{self, Edit, Task};
+use crate::api::{
+    self, Edit,
+    State::{self, *},
+    Task,
+};
 
 // Commands
 
@@ -16,23 +20,16 @@ pub fn list_tasks(mark: Option<String>) -> io::Result<()> {
                 Some(id) => id == &task.id,
             };
             print!(" {}", (i + 1).cyan());
-            if task.done {
-                print!(" {}", "(✓)".bright_green().bold())
-            } else {
-                print!(" {}", "( )".dimmed())
+            match task.state {
+                Done => print!(" {}", "(✓)".bright_green().bold()),
+                WIP => print!(" {}", "(…)".bright_yellow().bold()),
+                Pending => print!(" {}", "( )".dimmed()),
             }
-            if hl {
-                if task.done {
-                    println!(" {}", task.task.bold().strikethrough());
-                } else {
-                    println!(" {}", task.task.bold());
-                }
-            } else {
-                if task.done {
-                    println!(" {}", task.task.strikethrough());
-                } else {
-                    println!(" {}", task.task);
-                }
+            match task.state {
+                Done if hl => println!(" {}", task.task.bold().strikethrough()),
+                Done => println!(" {}", task.task.strikethrough()),
+                _ if hl => println!(" {}", task.task.bold()),
+                _ => println!(" {}", task.task),
             }
         }
     }
@@ -41,19 +38,19 @@ pub fn list_tasks(mark: Option<String>) -> io::Result<()> {
 
 pub fn show_task(n: usize) -> io::Result<()> {
     if let Some(task) = get_task(n)? {
-        print!("{}{}", "Task #".dimmed(), (n + 1).dimmed());
-        if task.done {
-            println!(" - {}", "Done!".green());
-        } else {
-            println!(" - {}", "Pending".yellow());
+        print!("{}{} - ", "Task #".dimmed(), (n + 1).dimmed());
+        match task.state {
+            Done => println!("{}", "Done!".green()),
+            WIP => println!("{}", "In progress...".yellow()),
+            Pending => println!("{}", "Pending".dimmed()),
         }
         println!("{}", task.task.bold());
     }
     Ok(())
 }
-pub fn done_task(n: usize, done: bool) -> io::Result<Option<Task>> {
+pub fn set_task_state(n: usize, state: State) -> io::Result<Option<Task>> {
     if let Some(mut task) = get_task(n)? {
-        task.done = done;
+        task.state = state;
         task.save()?;
         api::edit_sort(Edit::None)?;
         Ok(Some(task))

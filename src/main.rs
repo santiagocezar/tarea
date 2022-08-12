@@ -23,6 +23,11 @@ enum Action {
         /// Task number
         id: usize,
     },
+    /// Start working in task
+    Start {
+        /// Task number
+        id: usize,
+    },
     /// Mark task as pending
     Undo {
         /// Task number
@@ -41,6 +46,8 @@ enum Action {
 struct Args {
     #[clap(subcommand)]
     action: Option<Action>,
+    /// Show task
+    task: Option<usize>,
     #[clap(short, long, alias = "quiet")]
     /// Don't show list after commands
     silent: bool,
@@ -54,6 +61,10 @@ fn main() -> io::Result<()> {
 
     use Action::*;
 
+    if let Some(id) = args.task {
+        return cmd::show_task(id.saturating_sub(1));
+    }
+
     let action = args.action.unwrap_or(List);
 
     // store the modified task to highlight it in the list
@@ -66,8 +77,6 @@ fn main() -> io::Result<()> {
             }
             Some(api::add_task(task_text.trim_end())?)
         }
-        Done { id } => cmd::done_task(id.saturating_sub(1), true)?,
-        Undo { id } => cmd::done_task(id.saturating_sub(1), false)?,
         Rm { id } => {
             let task = cmd::remove_task(id.saturating_sub(1))?;
             if let Some(task) = &task {
@@ -78,7 +87,10 @@ fn main() -> io::Result<()> {
         List => {
             args.silent = false;
             None
-        },
+        }
+        Undo { id } => cmd::set_task_state(id.saturating_sub(1), api::State::Pending)?,
+        Start { id } => cmd::set_task_state(id.saturating_sub(1), api::State::WIP)?,
+        Done { id } => cmd::set_task_state(id.saturating_sub(1), api::State::Done)?,
     };
 
     if !args.silent {

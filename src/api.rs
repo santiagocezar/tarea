@@ -13,11 +13,20 @@ lazy_static! {
     pub static ref SORT_FILE: PathBuf = APPDIR.join("sort");
 }
 
+#[derive(Serialize, Deserialize, Default, PartialEq, PartialOrd, Eq, Ord, Clone, Copy)]
+pub enum State {
+    #[default]
+    Pending,
+    WIP,
+    Done,
+}
+
 #[derive(Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub task: String,
-    pub done: bool,
+    #[serde(default)]
+    pub state: State,
     pub parent: Option<String>,
 }
 
@@ -59,7 +68,7 @@ pub fn add_task(task: &str) -> io::Result<Task> {
     let t = Task {
         id,
         task: task.to_string(),
-        done: false,
+        state: State::Pending,
         parent: None,
     };
     t.save()?;
@@ -78,7 +87,7 @@ pub enum Edit<'a> {
 pub fn edit_sort(edit: Edit) -> io::Result<()> {
     let mut tasks = list_tasks()?;
 
-    tasks.sort_by_key(|t| t.done);
+    tasks.sort_by_key(|t| t.state);
 
     let mut sort = fs::OpenOptions::new()
         .write(true)
