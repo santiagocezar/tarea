@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs,
     io::{self, BufRead, Write},
     path::PathBuf,
@@ -7,6 +8,8 @@ use std::{
 use dirs::data_dir;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+
+use crate::util::default;
 
 lazy_static! {
     pub static ref APPDIR: PathBuf = data_dir().unwrap().join("tarea");
@@ -31,6 +34,20 @@ pub struct Task {
 }
 
 impl Task {
+    pub fn new(text: String) -> Self {
+        let id = Uuid::new_v4().to_string();
+
+        Self {
+            id,
+            task: text,
+            state: State::Pending,
+            parent: None,
+        }
+    }
+    pub fn load(id: &str) -> io::Result<Self> {
+        let task_file = fs::File::open(APPDIR.join(id.to_string() + ".json"))?;
+        Ok(serde_json::from_reader(task_file)?)
+    }
     pub fn save(&self) -> io::Result<()> {
         let task_file = fs::File::create(APPDIR.join(self.id.clone() + ".json"))?;
         serde_json::to_writer(task_file, self)?;
@@ -55,59 +72,100 @@ pub fn list_tasks() -> io::Result<Vec<Task>> {
     };
 
     for id in io::BufReader::new(sort).lines() {
-        let task_file = fs::File::open(APPDIR.join(id? + ".json"))?;
-        let task: Task = serde_json::from_reader(task_file)?;
-        tasks.push(task);
+        tasks.push(Task::load(&id?)?);
     }
     Ok(tasks)
 }
 
-pub fn add_task(task: &str) -> io::Result<Task> {
-    let id = Uuid::new_v4().to_string();
-
-    let t = Task {
-        id,
-        task: task.to_string(),
-        state: State::Pending,
-        parent: None,
-    };
-    t.save()?;
-
-    edit_sort(Edit::Add(&t.id))?;
-
-    Ok(t)
+pub enum Edit {
+    Add(String),
+    Remove(usize),
+    Update(usize, State),
 }
 
-pub enum Edit<'a> {
-    None,
-    Add(&'a str),
-    Del(&'a str),
+#[derive(Default)]
+pub struct Changeset {
+    /// ids of the added tasks
+    pub added: HashSet<String>,
+    /// ids of the updated tasks
+    pub updated: HashSet<String>,
+    /// the deleted tasks
+    pub deleted: Vec<Task>,
 }
 
-pub fn edit_sort(edit: Edit) -> io::Result<()> {
-    let mut tasks = list_tasks()?;
+pub struct Edits(Vec<Edit>);
 
-    tasks.sort_by_key(|t| t.state);
+impl Edits {
+    pub fn does(stuff: impl FnOnce(&mut Self) -> ()) -> io::Result<(Changeset, Vec<Task>)> {
+        // run the function to get the edits
+        let mut edits = Self(default());
+        stuff(&mut edits);
 
-    let mut sort = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .open(SORT_FILE.as_path())?;
+        let Self(edits) = edits;
 
-    if let Edit::Add(id) = edit {
-        writeln!(sort, "{}", id)?;
-    }
-    for task in tasks {
-        let skip = if let Edit::Del(id) = edit {
-            task.id == id
-        } else {
-            false
-        };
-        if !skip {
+        // track changes to show feedback to the user
+        let mut changeset: Changeset = default();
+        let tasks = list_tasks()?;
+
+        if edits.is_empty() {
+            // no reason to keep going
+            return Ok((changeset, tasks));
+        }
+
+        // allows me to "delete" tasks without the items
+        // moving all over the vec
+        let mut tasks: Vec<_> = tasks.into_iter().map(Some).collect();
+        let mut added_tasks: Vec<Task> = default();
+
+        for edit in edits {
+            match edit {
+                Edit::Add(text) => {
+                    let task = Task::new(text);
+                    changeset.added.insert(task.id.clone());
+                    task.save()?;
+                    added_tasks.push(task);
+                }
+                Edit::Remove(n) => {
+                    if n < tasks.len() {
+                        if let Some(task) = tasks[n].take() {
+                            task.remove()?;
+                            changeset.deleted.push(task);
+                        }
+                    }
+                }
+                Edit::Update(n, state) => {
+                    if n < tasks.len() {
+                        if let Some(task) = &mut tasks[n] {
+                            changeset.updated.insert(task.id.clone());
+                            task.state = state
+                        }
+                    }
+                }
+            }
+        }
+
+        added_tasks.extend(tasks.into_iter().filter_map(|t| t));
+        added_tasks.sort_by_key(|t| t.state);
+
+        let mut sort = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(SORT_FILE.as_path())?;
+
+        for task in &added_tasks {
             writeln!(sort, "{}", task.id)?;
         }
+        Ok((changeset, added_tasks))
     }
 
-    Ok(())
+    pub fn add(&mut self, text: &str) {
+        self.0.push(Edit::Add(text.to_string()))
+    }
+    pub fn remove(&mut self, n: usize) {
+        self.0.push(Edit::Remove(n.saturating_sub(1)))
+    }
+    pub fn update(&mut self, n: usize, state: State) {
+        self.0.push(Edit::Update(n.saturating_sub(1), state))
+    }
 }

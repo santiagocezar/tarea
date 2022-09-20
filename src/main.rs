@@ -1,13 +1,14 @@
-mod api;
-mod cmd;
-
 #[macro_use]
 extern crate lazy_static;
+
 use clap::{AppSettings, Parser, Subcommand};
 use owo_colors::OwoColorize;
 use std::{fs, io};
 
-use api::APPDIR;
+mod api;
+mod util;
+
+use api::{Edits, State, Task, APPDIR};
 
 #[derive(Subcommand)]
 enum Action {
@@ -20,23 +21,23 @@ enum Action {
     List,
     /// Mark task as done
     Done {
-        /// Task number
-        id: usize,
+        /// The number displayed
+        tasks: Vec<usize>,
     },
     /// Start working in task
     Start {
-        /// Task number
-        id: usize,
+        /// The number displayed
+        tasks: Vec<usize>,
     },
     /// Mark task as pending
     Undo {
-        /// Task number
-        id: usize,
+        /// The number displayed
+        tasks: Vec<usize>,
     },
     /// Remove task
     Rm {
-        /// Task number
-        id: usize,
+        /// The number displayed
+        tasks: Vec<usize>,
     },
 }
 
@@ -61,42 +62,83 @@ fn main() -> io::Result<()> {
 
     use Action::*;
 
-    if let Some(id) = args.task {
-        return cmd::show_task(id.saturating_sub(1));
+    if let Some(n) = args.task {
+        let mut tasks = api::list_tasks()?;
+        if n >= tasks.len() {
+            eprintln!(
+                "{}: There's no task number {}",
+                "error".bright_red().bold(),
+                n + 1
+            );
+        } else {
+            let task = tasks.remove(n);
+            print!("{}{} - ", "Task #".dimmed(), (n + 1).dimmed());
+            match task.state {
+                State::Done => println!("{}", "Done!".green()),
+                State::WIP => println!("{}", "In progress...".yellow()),
+                State::Pending => println!("{}", "Pending".dimmed()),
+            }
+            println!("{}", task.task.bold());
+        }
     }
 
     let action = args.action.unwrap_or(List);
 
     // store the modified task to highlight it in the list
-    let mark = match action {
-        Add { task } => {
-            let mut task_text = String::new();
-            for mut t in task {
-                t += " ";
-                task_text += &t;
+    let (changeset, tasks) = Edits::does(|e| {
+        match action {
+            Add { task } => {
+                e.add(task.join(" ").trim_end());
             }
-            Some(api::add_task(task_text.trim_end())?)
-        }
-        Rm { id } => {
-            let task = cmd::remove_task(id.saturating_sub(1))?;
-            if let Some(task) = &task {
-                println!("{} {}", "removed".red(), task.task);
+            List => {
+                args.silent = false;
             }
-            task
-        }
-        List => {
-            args.silent = false;
-            None
-        }
-        Undo { id } => cmd::set_task_state(id.saturating_sub(1), api::State::Pending)?,
-        Start { id } => cmd::set_task_state(id.saturating_sub(1), api::State::WIP)?,
-        Done { id } => cmd::set_task_state(id.saturating_sub(1), api::State::Done)?,
-    };
+            Done { tasks } => {
+                for n in tasks {
+                    e.update(n, api::State::Done);
+                }
+            }
+            Start { tasks } => {
+                for n in tasks {
+                    e.update(n, api::State::WIP);
+                }
+            }
+            Undo { tasks } => {
+                for n in tasks {
+                    e.update(n, api::State::Pending);
+                }
+            }
+            Rm { tasks } => {
+                for n in tasks {
+                    e.remove(n);
+                }
+            }
+        };
+    })?;
 
-    if !args.silent {
-        // pass the task id to highlight
-        cmd::list_tasks(mark.map(|t| t.id))
-    } else {
-        Ok(())
+    for Task { task, .. } in &changeset.deleted {
+        println!("{} {}", " rm (-)".red(), task)
     }
+    if !args.silent {
+        if tasks.is_empty() {
+            println!("{}", "You've got no tasks!".yellow());
+        } else {
+            for (i, task) in tasks.iter().enumerate() {
+                let hl = changeset.added.contains(&task.id) || changeset.updated.contains(&task.id);
+                print!("{:>3}", (i + 1).cyan());
+                match task.state {
+                    State::Done => print!(" {}", "(✓)".bright_green().bold()),
+                    State::WIP => print!(" {}", "(…)".bright_yellow().bold()),
+                    State::Pending => print!(" {}", "( )".dimmed()),
+                }
+                match task.state {
+                    State::Done if hl => println!(" {}", task.task.bold().strikethrough()),
+                    State::Done => println!(" {}", task.task.strikethrough()),
+                    _ if hl => println!(" {}", task.task.bold()),
+                    _ => println!(" {}", task.task),
+                }
+            }
+        }
+    }
+    Ok(())
 }
